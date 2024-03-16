@@ -26,13 +26,10 @@ def preprocess_string(s):
 
 
 class SentenceClassificationDataset(Dataset):
-    def __init__(self, dataset, args, lang):
+    def __init__(self, dataset, args):
         self.dataset = dataset
         self.p = args
-        if lang == 'en':
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        else:
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
         return len(self.dataset)
@@ -104,14 +101,11 @@ class SentenceClassificationTestDataset(Dataset):
 
 
 class SentencePairDataset(Dataset):
-    def __init__(self, dataset, args, lang, isRegression=False):
+    def __init__(self, dataset, args, isRegression=False):
         self.dataset = dataset
         self.p = args
         self.isRegression = isRegression 
-        if lang == 'en':
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        else:
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
         return len(self.dataset)
