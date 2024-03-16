@@ -65,32 +65,44 @@ class MultitaskBERT(nn.Module):
     '''
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+        self.bert_en = BertModel.from_pretrained('bert-base-uncased')
+        self.bert_fr = BertModel.from_pretrained('bert-base-multilingual-uncased')
         # Pretrain mode does not require updating BERT paramters.
-        for param in self.bert.parameters():
+        for param in self.bert_en.parameters():
+            if config.option == 'pretrain':
+                param.requires_grad = False
+            elif config.option == 'finetune':
+                param.requires_grad = True
+        for param in self.bert_fr.parameters():
             if config.option == 'pretrain':
                 param.requires_grad = False
             elif config.option == 'finetune':
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
-        self.linear_sentiment = torch.nn.Linear(config.hidden_size, len(config.num_labels))
+        self.linear_sentiment_en = torch.nn.Linear(config.hidden_size, len(config.num_labels))
+        self.linear_sentiment_fr = torch.nn.Linear(config.hidden_size, 2)
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         #Works for  paraphrase detection (double the hidden size since we cat two examples outputs, and out values either 0 or 1 on whether paraphrase)
+        #same for french paraphrase (is or isn't)
         self.linear_paraphrase = torch.nn.Linear(2 * config.hidden_size, 1)
         #Works for similarity prediction detection (out values 0 to 5 on how similar)
+        #same for french similarity (on a scale of 0 to 1 instead but still a single ouput logit)
         self.linear_similarity = torch.nn.Linear(2 * config.hidden_size, 1)
         #raise NotImplementedError
 
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, lang):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
         # When thinking of improvements, you can later try modifying this
         # (e.g., by adding other layers).
         ### TODO
-        minbert_out = self.bert(input_ids, attention_mask)['pooler_output']
+        if lang == 'en':
+            minbert_out = self.bert_en(input_ids, attention_mask)['pooler_output']
+        else:
+            minbert_out = self.bert_fr(input_ids, attention_mask)['pooler_output']
         return minbert_out
 
 
@@ -102,9 +114,15 @@ class MultitaskBERT(nn.Module):
         '''
         ### TODO
         #Initial baseline- just use existing BERT embeddings to attempt downstream tasks
-        minbert_out = self.forward(input_ids, attention_mask)
+        minbert_out = self.forward(input_ids, attention_mask, lang='en')
         dropout_out = self.dropout(minbert_out)
-        logits = self.linear_sentiment(dropout_out)
+        logits = self.linear_sentiment_en(dropout_out)
+        return logits
+
+    def predict_sentiment_fr(self, input_ids, attention_mask):
+        minbert_out = self.forward(input_ids, attention_mask, lang='fr')
+        dropout_out = self.dropout(minbert_out)
+        logits = self.linear_sentiment_fr(dropout_out)
         return logits
 
 
@@ -116,9 +134,9 @@ class MultitaskBERT(nn.Module):
         during evaluation.
         '''
         ### TODO
-        minbert_out_1 = self.forward(input_ids_1, attention_mask_1)
+        minbert_out_1 = self.forward(input_ids_1, attention_mask_1, lang='en')
         dropout_out_1 = self.dropout(minbert_out_1)
-        minbert_out_2 = self.forward(input_ids_2, attention_mask_2)
+        minbert_out_2 = self.forward(input_ids_2, attention_mask_2, lang='en')
         dropout_out_2 = self.dropout(minbert_out_2)
         combined_minbert= torch.cat((dropout_out_1, dropout_out_2), dim=1)
         logits = self.linear_paraphrase(combined_minbert)
@@ -136,6 +154,22 @@ class MultitaskBERT(nn.Module):
         return logits
 
 
+    def predict_paraphrase_fr(self,
+                           input_ids_1, attention_mask_1,
+                           input_ids_2, attention_mask_2):
+        '''Given a batch of pairs of sentences, outputs a single logit for predicting whether they are paraphrases.
+        Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
+        during evaluation.
+        '''
+        ### TODO
+        minbert_out_1 = self.forward(input_ids_1, attention_mask_1, lang='fr')
+        dropout_out_1 = self.dropout(minbert_out_1)
+        minbert_out_2 = self.forward(input_ids_2, attention_mask_2, lang='fr')
+        dropout_out_2 = self.dropout(minbert_out_2)
+        combined_minbert= torch.cat((dropout_out_1, dropout_out_2), dim=1)
+        logits = self.linear_paraphrase(combined_minbert)
+        return logits
+
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
@@ -143,9 +177,29 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit).
         '''
         ### TODO
-        minbert_out_1 = self.forward(input_ids_1, attention_mask_1)
+        minbert_out_1 = self.forward(input_ids_1, attention_mask_1, lang='en')
         dropout_out_1 = self.dropout(minbert_out_1)
-        minbert_out_2 = self.forward(input_ids_2, attention_mask_2)
+        minbert_out_2 = self.forward(input_ids_2, attention_mask_2, lang='en')
+        dropout_out_2 = self.dropout(minbert_out_2)
+        combined_minbert= torch.cat((dropout_out_1, dropout_out_2), dim=1)
+        logits = self.linear_similarity(combined_minbert)
+        # combined_input = torch.cat((input_ids_1, input_ids_2), dim=1)
+        # combined_attention_mask = torch.cat((attention_mask_1, attention_mask_2), dim=1)
+        # minbert_out = self.forward(combined_input, combined_attention_mask) 
+        # dropout_out = self.dropout(minbert_out)
+        # logits = self.linear_similarity(dropout_out)
+        return logits
+    
+    def predict_similarity_fr(self,
+                           input_ids_1, attention_mask_1,
+                           input_ids_2, attention_mask_2):
+        '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
+        Note that your output should be unnormalized (a logit).
+        '''
+        ### TODO
+        minbert_out_1 = self.forward(input_ids_1, attention_mask_1, lang='fr')
+        dropout_out_1 = self.dropout(minbert_out_1)
+        minbert_out_2 = self.forward(input_ids_2, attention_mask_2, lang='fr')
         dropout_out_2 = self.dropout(minbert_out_2)
         combined_minbert= torch.cat((dropout_out_1, dropout_out_2), dim=1)
         logits = self.linear_similarity(combined_minbert)
@@ -186,11 +240,60 @@ def save_model(model, optimizer, args, config, filepath):
 # #My train loading helper function for loadingParaphrase Quora dataset for training
 # def load_semEval():
 #     pass
+#Defining as a global variable
+fr_tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased')
+
 def truncate(example):
     return {
         'inputs': " ".join(example['inputs'].split()[:50]),
         'targets': example['targets']
     }
+
+def truncateSentencePair_fr(example):
+    return {
+        'sentence1': " ".join(example['sentence1'].split()[:50]),
+        'sentence2': " ".join(example['sentence2'].split()[:50]),
+        'label': example['label']
+    }
+
+def truncateSimilarity_fr(example):
+    combined_phrases = example['inputs']
+    phrase1_startidx = combined_phrases.find('Phrase 1 :')
+    phrase2_startidx = combined_phrases.find('Phrase 2 :')
+    #+10 scoots it up to actual sentence start
+    phrase1 = combined_phrases[phrase1_startidx + 10:phrase2_startidx]
+    phrase2= combined_phrases[phrase2_startidx + 10:]
+    return {
+        'sentence1': " ".join(phrase1.split()[:50]),
+        'sentence2': " ".join(phrase2.split()[:50]),
+        'label': example['targets']
+    }
+
+def fr_tokenize_helper(example):
+    encoding1 = fr_tokenizer(example['sentence1'], return_tensors='pt', padding=True, truncation=True)
+    encoding2 = fr_tokenizer(example['sentence2'], return_tensors='pt', padding=True, truncation=True)
+
+    token_ids = torch.LongTensor(encoding1['input_ids'])
+    attention_mask = torch.LongTensor(encoding1['attention_mask'])
+    token_type_ids = torch.LongTensor(encoding1['token_type_ids'])
+
+    token_ids2 = torch.LongTensor(encoding2['input_ids'])
+    attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
+    token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
+
+    # if self.isRegression:
+    #     labels = torch.DoubleTensor(labels)
+    # else:
+    #     labels = torch.LongTensor(labels)
+
+    return {'token_ids_1': token_ids, 
+            'token_type_ids_1': token_type_ids,
+            'attention_mask_1': attention_mask,
+            'token_ids_2': token_ids2, 
+            'token_type_ids_2': token_type_ids2, 
+            'attention_mask_2': attention_mask2
+            }
+    #train = example['train']
 
 def train_multitask(args):
     '''Train MultitaskBERT.
@@ -206,29 +309,26 @@ def train_multitask(args):
     sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train, args.para_train, args.sts_train, split ='train')
     sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
 
-    fr_tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased')
-    french_sentiment_dataset = load_dataset('CATIE-AQ/french_book_reviews_fr_prompt_sentiment_analysis')
+    fr_sentiment_dataset_orig = load_dataset('CATIE-AQ/french_book_reviews_fr_prompt_sentiment_analysis')
 
     fr_sentiment_dataset = DatasetDict(
-        train=fr_sentiment_dataset['train'].shuffle(seed=1111).select(range(128)).map(truncate),
-        val=fr_sentiment_dataset['train'].shuffle(seed=1111).select(range(128, 160)).map(truncate),
+        train=fr_sentiment_dataset_orig['train'].shuffle(seed=1111).select(range(128)).map(truncate),
+        val=fr_sentiment_dataset_orig['train'].shuffle(seed=1111).select(range(128, 160)).map(truncate),
     )
-    print(fr_sentiment_dataset)
-    print(fr_sentiment_dataset['train'][:10])
 
-    fr_tokenized_dataset = french_sentiment_dataset.map(
+    fr_sentiment_tokenized_dataset = fr_sentiment_dataset.map(
         lambda example: fr_tokenizer(example['inputs'], padding=True, truncation=True),
         batched=True,
         batch_size=8
     )
 
-    small_tokenized_dataset = small_tokenized_dataset.remove_columns(["inputs"])
+    fr_sentiment_tokenized_dataset = fr_sentiment_tokenized_dataset.remove_columns(["inputs"])
     #small_tokenized_dataset = small_tokenized_dataset.rename_column("label", "labels")
-    small_tokenized_dataset.set_format("torch")
+    fr_sentiment_tokenized_dataset.set_format("torch")
     #print(small_tokenized_dataset['train'][0:2])
-
-    train_dataloader = DataLoader(small_tokenized_dataset['train'], batch_size=8)
-
+    fr_sentiment_train_dataloader = DataLoader(fr_sentiment_tokenized_dataset['train'], batch_size=8)
+    fr_sentiment_train_dataloader = DataLoader(fr_sentiment_tokenized_dataset['val'], batch_size=8)
+    
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
 
@@ -242,6 +342,7 @@ def train_multitask(args):
 
     # self.load_semEval()
     #Paraphrase data prep
+    #English:
     #para_train_data = para_train_data[:200]
     para_train_data = SentencePairDataset(para_train_data, args)
     para_dev_data = SentencePairDataset(para_dev_data, args)
@@ -251,6 +352,25 @@ def train_multitask(args):
     para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
                                          collate_fn=para_dev_data.collate_fn)
     
+    #French paraphrase
+    fr_paraphrase_dataset_orig = load_dataset('paws-x', 'fr')
+
+    fr_paraphrase_dataset = DatasetDict(
+        train=fr_paraphrase_dataset_orig['train'].shuffle(seed=1111).select(range(128)).map(truncateSentencePair_fr),
+        val=fr_paraphrase_dataset_orig['validation'].shuffle(seed=1111).select(range(128, 160)).map(truncateSentencePair_fr),
+    )
+
+    fr_paraphrase_tokenized_dataset = fr_paraphrase_dataset.map(fr_tokenize_helper, batched=True,
+        batch_size=8)
+
+    fr_paraphrase_tokenized_dataset = fr_paraphrase_tokenized_dataset.remove_columns(["sentence1"])
+    fr_paraphrase_tokenized_dataset = fr_paraphrase_tokenized_dataset.remove_columns(["sentence2"])
+    fr_paraphrase_tokenized_dataset = fr_paraphrase_tokenized_dataset.rename_column("label", "labels")
+    fr_paraphrase_tokenized_dataset.set_format("torch")
+    #print(small_tokenized_dataset['train'][0:2])
+    fr_paraphrase_train_dataloader = DataLoader(fr_paraphrase_tokenized_dataset['train'], batch_size=8)
+    fr_paraphrase_dev_dataloader = DataLoader(fr_paraphrase_tokenized_dataset['val'], batch_size=8)
+
     #semantic textual simlarity data prep
     sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
@@ -259,6 +379,25 @@ def train_multitask(args):
                                          collate_fn=sts_train_data.collate_fn)
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                         collate_fn=sts_dev_data.collate_fn)
+    
+    #French semantic textual similarity
+    fr_similarity_dataset_orig = load_dataset('CATIE-AQ/stsb_multi_mt_fr_prompt_sentence_similarity')
+
+    fr_similarity_dataset = DatasetDict(
+        train=fr_similarity_dataset_orig['train'].shuffle(seed=1111).select(range(128)).map(truncateSimilarity_fr),
+        val=fr_similarity_dataset_orig['validation'].shuffle(seed=1111).select(range(128, 160)).map(truncateSimilarity_fr),
+    )
+
+    #Since I just reformatted the datset to have a column for each phrase and a label, don't need the original setup
+    fr_similarity_dataset = fr_similarity_dataset.remove_columns(["inputs"])
+    fr_similarity_dataset = fr_similarity_dataset.remove_columns(["targets"])
+
+    fr_similarity_tokenized_dataset = fr_similarity_dataset.map(fr_tokenize_helper, batched=True,
+        batch_size=8)
+
+    fr_similarity_tokenized_dataset.set_format("torch")
+    fr_similarity_train_dataloader = DataLoader(fr_paraphrase_tokenized_dataset['train'], batch_size=8)
+    fr_similarity_dev_dataloader = DataLoader(fr_paraphrase_tokenized_dataset['val'], batch_size=8)
     ####END MY CODE #########
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -281,7 +420,9 @@ def train_multitask(args):
         model.train()
         train_loss = 0
         num_batches = 0
-        for batch in tqdm(sst_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
+    #     #SENTIMENT LOOPS
+    #     #English sentiment:
+        for batch in tqdm(sst_train_dataloader, desc=f'trainSentimentEn-{epoch}', disable=TQDM_DISABLE):
             b_ids, b_mask, b_labels = (batch['token_ids'],
                                        batch['attention_mask'], batch['labels'])
 
@@ -290,7 +431,7 @@ def train_multitask(args):
             b_labels = b_labels.to(device)
 
             optimizer.zero_grad()
-            logits = model.predict_sentiment(b_ids, b_mask)
+            logits = model.predict_sentiment_en(b_ids, b_mask)
             loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
             loss.backward()
@@ -299,8 +440,30 @@ def train_multitask(args):
             train_loss += loss.item()
             num_batches += 1
             
-        #Train a batch for paraphrase
-        for batch in tqdm(para_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
+        #French sentiment:
+        label_mapping = {'neg': 0, 'pos': 1}
+        for batch in tqdm(fr_sentiment_train_dataloader, desc=f'trainSentimentFr-{epoch}', disable=TQDM_DISABLE):
+            b_ids, b_mask, b_labels = (batch['input_ids'],
+                                       batch['attention_mask'], batch['targets'])
+    
+            #Change pos and neg to 1 and 0, and make it a long tensor instead of a list for cross entropy
+            converted_labels = [label_mapping[label] for label in b_labels]
+            b_labels = torch.LongTensor(converted_labels)
+
+            optimizer.zero_grad()
+            logits = model.predict_sentiment_fr(b_ids, b_mask)
+            loss = F.cross_entropy(logits, b_labels, reduction='sum') / args.batch_size
+
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            num_batches += 1
+
+
+        # #Train a batch for paraphrase
+        #English paraphrase:
+        for batch in tqdm(para_train_dataloader, desc=f'trainParaEn-{epoch}', disable=TQDM_DISABLE):
             b_ids_1, b_type_ids_1, b_mask_1, b_ids_2, b_type_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
                                        batch['token_type_ids_1'], batch['attention_mask_1'], batch['token_ids_2'],
                                        batch['token_type_ids_2'], batch['attention_mask_2'], batch['labels'])
@@ -321,8 +484,33 @@ def train_multitask(args):
 
             train_loss += loss.item()
             num_batches += 1
+
+        #French paraphrase:
+        for batch in tqdm(fr_paraphrase_train_dataloader, desc=f'trainParaFr-{epoch}', disable=TQDM_DISABLE):
+            b_ids_1, b_type_ids_1, b_mask_1, b_ids_2, b_type_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
+                                       batch['token_type_ids_1'], batch['attention_mask_1'], batch['token_ids_2'],
+                                       batch['token_type_ids_2'], batch['attention_mask_2'], batch['labels'])
+            b_ids_1 = b_ids_1.to(device)
+            b_type_ids_1 = b_type_ids_1.to(device)
+            b_mask_1 = b_mask_1.to(device)
+            b_ids_2 = b_ids_2.to(device)
+            b_type_ids_2 = b_type_ids_2.to(device)
+            b_mask_2 = b_mask_2.to(device)
+            b_labels = b_labels.to(device)
+
+            optimizer.zero_grad()
+            logits = model.predict_paraphrase_fr(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+            loss = F.cross_entropy(logits.float().squeeze(), b_labels.float().view(-1), reduction='sum') / args.batch_size
+
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            num_batches += 1
+
         #Train a batch for semantic similarity
-        for batch in tqdm(sts_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
+        #English similarity:
+        for batch in tqdm(sts_train_dataloader, desc=f'trainSimEn-{epoch}', disable=TQDM_DISABLE):
             b_ids_1, b_type_ids_1, b_mask_1, b_ids_2, b_type_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
                                        batch['token_type_ids_1'], batch['attention_mask_1'], batch['token_ids_2'],
                                        batch['token_type_ids_2'], batch['attention_mask_2'], batch['labels'])
@@ -345,14 +533,37 @@ def train_multitask(args):
             num_batches += 1
         train_loss = train_loss / (num_batches)
 
+        #French similarity
+        for batch in tqdm(fr_similarity_train_dataloader, desc=f'trainSimFr-{epoch}', disable=TQDM_DISABLE):
+            b_ids_1, b_type_ids_1, b_mask_1, b_ids_2, b_type_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
+                                       batch['token_type_ids_1'], batch['attention_mask_1'], batch['token_ids_2'],
+                                       batch['token_type_ids_2'], batch['attention_mask_2'], batch['labels'])
+            b_ids_1 = b_ids_1.to(device)
+            b_type_ids_1 = b_type_ids_1.to(device)
+            b_mask_1 = b_mask_1.to(device)
+            b_ids_2 = b_ids_2.to(device)
+            b_type_ids_2 = b_type_ids_2.to(device)
+            b_mask_2 = b_mask_2.to(device)
+            b_labels = b_labels.to(device)
+
+            optimizer.zero_grad()
+            logits = model.predict_similarity_fr(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+            loss = F.cross_entropy(logits.float().squeeze(), b_labels.float().view(-1), reduction='sum') / args.batch_size
+
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            num_batches += 1
+        train_loss = train_loss / (num_batches)
         #BEFORE: Just evaluated on SST
         # train_acc, train_f1, *_ = model_eval_sst(sst_train_dataloader, model, device)
         # dev_acc, dev_f1, *_ = model_eval_sst(sst_dev_dataloader, model, device)
 
         #NOW: Evaluates on all 3
-        train_acc, train_f1, *_ = model_eval_multitask(sst_train_dataloader,
-                         para_train_dataloader,
-                         sts_train_dataloader,
+        train_acc, train_f1, *_ = model_eval_multitask(sst_train_dataloader, fr_sentiment_train_dataloader,
+                         para_train_dataloader, fr_paraphrase_train_dataloader,
+                         sts_train_dataloader, fr_similarity_train_dataloader,
                          model, device)
         dev_acc, dev_f1, *_ = model_eval_multitask(sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, model, device)
 
