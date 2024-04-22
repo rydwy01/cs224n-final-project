@@ -1,2 +1,4 @@
 # cs224n-final-project
-Using multilingual BERT ensembling to improve performance on English based tasks
+In this project I created a pre-trained mini-BERT model with the goal of performing well on the tasks of English-language sentiment analysis, paraphrase detection, and semantic textual similarity.  As we were given free reign on what methods to use to improve this task, I chose to look into model ensembling– incorporating multiple outputs from a BERT model and when preducting across multiple task domains.  I also wanted to experiment with the possibility  that using data from the same task but in another language to see if it could be a useful technique to improve on more diverse grammatical understanding that can come from understanding a domain expressed in different ways.  Thus, I created an ensmemble with the multilingual-pretrained BERT model and fine-tuned it with some hugging face datasets in French for each of the three tasks to test.
+
+Feel free to read my final paper I have linked where I go into more detail, as well as the poster I presented for this project at the end of the course which gives a great summary of the analysis and results
